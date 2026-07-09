@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from merlin.config_loader import load_all_configs
+from merlin.hardware_probe import hardware_profile
 from merlin.memory_manager import MemoryManager
 from merlin.provider_connector_store import (
     ProviderConnectorRecord,
@@ -228,6 +229,35 @@ def _write_provider_connector_audit(action: str, record: ProviderConnectorRecord
         return None
 
 
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/hardware")
+def status_hardware() -> dict[str, Any]:
+    """Return a read-only hardware profile for this machine.
+
+    Detects RAM, maps to a hardware tier, and returns the tier's model and
+    profile guidance. Zero side effects. Safe to call on every dashboard load.
+
+    Response fields:
+      ram_gb            – detected total physical RAM in whole GB (0 = unknown)
+      tier              – one of: high / mid / base / low / unsupported / unknown
+      max_model_class   – largest model class safe for this tier (e.g. "7b", "32b")
+      quantization      – recommended quant level(s) for this tier
+      default_profile   – Merlin profile recommended at startup
+      suggested_profiles– profiles safe to enable with approval
+      disabled_profiles – profiles that should NOT run on this tier by default
+      recommended_models– Ollama model names appropriate for this tier
+      warning           – human-readable guidance string for this tier
+      cpu               – best-effort CPU info (physical_cores, avx512_support, ...)
+      os                – platform.system() value
+      detection_source  – how RAM was read (sysctl / /proc/meminfo)
+      tier_config_source– canonical config file these thresholds come from
+    """
+    return hardware_profile()
+
+
 @router.get("/routes")
 def status_routes() -> dict[str, Any]:
     config = _load_config_quietly()
@@ -345,6 +375,12 @@ def status_models() -> dict[str, Any]:
     default_chat_alias = config.models.defaults.default_chat_model
     default_embedding_alias = config.models.defaults.default_embedding_model
 
+    # Pull hardware tier so model guidance is hardware-aware
+    hw = hardware_profile()
+    hw_tier = hw["tier"]
+    hw_max_class = hw["max_model_class"]
+    hw_recommended = hw["recommended_models"]
+
     try:
         installed_models = _ollama_tags()
         degraded = False
@@ -370,6 +406,7 @@ def status_models() -> dict[str, Any]:
             "install_command": f"bash scripts/add-model.sh {model.model}",
             "download_policy": "manual_only",
             "confirmation_required": True,
+            "hardware_recommended": model.model in hw_recommended,
         }
         local_models.append(record)
         if model.model_class == "embedding":
@@ -416,6 +453,9 @@ def status_models() -> dict[str, Any]:
         "downloads": "manual_only",
         "manual_confirmation_required": True,
         "low_memory_warning": LOW_MEMORY_MODEL_WARNING,
+        "hardware_tier": hw_tier,
+        "hardware_max_model_class": hw_max_class,
+        "hardware_recommended_models": hw_recommended,
     }
 
 
